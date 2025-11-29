@@ -1,59 +1,57 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, jsonify, send_file
 import subprocess
 import os
 import uuid
-import tempfile
+import requests
 import base64
-import re
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-def decode_base64_file(data_uri):
-    """Decode base64 data URI to bytes"""
-    # Extract base64 data from data URI
-    # Format: data:mime/type;base64,BASE64_DATA
-    match = re.match(r'data:([^;]+);base64,(.+)', data_uri)
-    if match:
-        mime_type = match.group(1)
-        base64_data = match.group(2)
-        file_data = base64.b64decode(base64_data)
-        return file_data, mime_type
-    return None, None
+TEMP_DIR = '/tmp'
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+@app.route('/')
+def home():
+    return jsonify({
+        "service": "FFmpeg Video Creation API",
+        "endpoints": {
+            "/create-video": "POST - Create video (supports URL, file upload, or base64)",
+            "/health": "GET - Health check"
+        }
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy"})
 
 @app.route('/create-video', methods=['POST'])
 def create_video():
-    """
-    Endpoint untuk membuat video dari image + audio
-    Supports both file upload and base64 data URI
-    """
     try:
-        temp_dir = tempfile.gettempdir()
-        video_id = str(uuid.uuid4())[:8]
+        data = request.get_json()
+        unique_id = str(uuid.uuid4())[:8]
         
-        # Check if request is JSON (base64) or form-data (file upload)
-        if request.is_json:
-            data = request.get_json()
+        # Handle base64 input
+        if 'image' in data and 'audio' in data:
+            print("Processing base64 data...")
             
-            if 'image' not in data or 'audio' not in data:
-                return jsonify({'error': 'Missing image or audio in JSON'}), 400
+            # Decode base64 strings
+            image_base64 = data['image']
+            audio_base64 = data['audio']
             
-            # Decode base64 image
-            image_data, image_mime = decode_base64_file(data['image'])
-            if not image_data:
-                return jsonify({'error': 'Invalid image data URI'}), 400
+            # Remove data URI prefix if exists
+            if 'base64,' in image_base64:
+                image_base64 = image_base64.split('base64,')[1]
+            if 'base64,' in audio_base64:
+                audio_base64 = audio_base64.split('base64,')[1]
             
-            # Decode base64 audio
-            audio_data, audio_mime = decode_base64_file(data['audio'])
-            if not audio_data:
-                return jsonify({'error': 'Invalid audio data URI'}), 400
+            # Decode
+            image_data = base64.b64decode(image_base64)
+            audio_data = base64.b64decode(audio_base64)
             
-            # Determine file extensions
-            image_ext = '.jpg' if 'jpeg' in image_mime else '.png'
-            audio_ext = '.mp3' if 'mpeg' in audio_mime else '.wav'
-            
-            # Save to temp files
-            image_path = os.path.join(temp_dir, f"image_{video_id}{image_ext}")
-            audio_path = os.path.join(temp_dir, f"audio_{video_id}{audio_ext}")
+            # Save to files
+            image_path = os.path.join(TEMP_DIR, f'image_{unique_id}.jpg')
+            audio_path = os.path.join(TEMP_DIR, f'audio_{unique_id}.mp3')
             
             with open(image_path, 'wb') as f:
                 f.write(image_data)
@@ -61,38 +59,50 @@ def create_video():
             with open(audio_path, 'wb') as f:
                 f.write(audio_data)
             
-            print(f"[INFO] Decoded from base64")
+            output_filename = data.get('output_filename', 'output_video.mp4')
+        
+        # Handle URL input
+        elif 'audio_url' in data and 'image_url' in data:
+            print("Processing URL data...")
+            audio_url = data['audio_url']
+            image_url = data['image_url']
+            output_filename = data.get('output_filename', 'output_video.mp4')
+            
+            audio_path = os.path.join(TEMP_DIR, f'audio_{unique_id}.mp3')
+            image_path = os.path.join(TEMP_DIR, f'image_{unique_id}.jpg')
+            
+            # Download files
+            print(f"Downloading audio from {audio_url}")
+            audio_response = requests.get(audio_url, timeout=60)
+            with open(audio_path, 'wb') as f:
+                f.write(audio_response.content)
+            
+            print(f"Downloading image from {image_url}")
+            image_response = requests.get(image_url, timeout=60)
+            with open(image_path, 'wb') as f:
+                f.write(image_response.content)
+        
+        # Handle multipart file upload
+        elif 'audio' in request.files and 'image' in request.files:
+            print("Processing file upload...")
+            audio_file = request.files['audio']
+            image_file = request.files['image']
+            output_filename = request.form.get('output_filename', 'output_video.mp4')
+            
+            audio_path = os.path.join(TEMP_DIR, f'audio_{unique_id}_{secure_filename(audio_file.filename)}')
+            image_path = os.path.join(TEMP_DIR, f'image_{unique_id}_{secure_filename(image_file.filename)}')
+            
+            audio_file.save(audio_path)
+            image_file.save(image_path)
         
         else:
-            # File upload (original method)
-            if 'image' not in request.files or 'audio' not in request.files:
-                return jsonify({'error': 'Missing image or audio files'}), 400
-            
-            image_file = request.files['image']
-            audio_file = request.files['audio']
-            
-            if image_file.filename == '' or audio_file.filename == '':
-                return jsonify({'error': 'Empty filename'}), 400
-            
-            image_ext = os.path.splitext(image_file.filename)[1] or '.jpg'
-            audio_ext = os.path.splitext(audio_file.filename)[1] or '.mp3'
-            
-            image_path = os.path.join(temp_dir, f"image_{video_id}{image_ext}")
-            audio_path = os.path.join(temp_dir, f"audio_{video_id}{audio_ext}")
-            
-            image_file.save(image_path)
-            audio_file.save(audio_path)
-            
-            print(f"[INFO] Files uploaded")
+            return jsonify({"error": "Invalid input. Provide either base64 (image/audio), URLs (audio_url/image_url), or file upload"}), 400
         
-        output_path = os.path.join(temp_dir, f"video_{video_id}.mp4")
+        # Create video with FFmpeg
+        output_path = os.path.join(TEMP_DIR, f'video_{unique_id}_{output_filename}')
         
-        print(f"[INFO] Processing video {video_id}")
-        print(f"[INFO] Image: {image_path} ({os.path.getsize(image_path)} bytes)")
-        print(f"[INFO] Audio: {audio_path} ({os.path.getsize(audio_path)} bytes)")
-        
-        # FFmpeg command
-        ffmpeg_cmd = [
+        print(f"Creating video: {output_path}")
+        cmd = [
             'ffmpeg',
             '-loop', '1',
             '-i', image_path,
@@ -103,82 +113,60 @@ def create_video():
             '-b:a', '192k',
             '-pix_fmt', 'yuv420p',
             '-shortest',
-            '-movflags', '+faststart',
             '-y',
             output_path
         ]
         
-        print(f"[INFO] Running FFmpeg...")
-        result = subprocess.run(
-            ffmpeg_cmd,
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
+        # Cleanup input files
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+        if os.path.exists(image_path):
+            os.remove(image_path)
         
         if result.returncode != 0:
-            print(f"[ERROR] FFmpeg failed: {result.stderr}")
+            print(f"FFmpeg error: {result.stderr}")
             return jsonify({
-                'error': 'FFmpeg processing failed',
-                'details': result.stderr
+                "error": "FFmpeg failed",
+                "details": result.stderr
             }), 500
         
         if not os.path.exists(output_path):
-            return jsonify({'error': 'Output video not created'}), 500
+            return jsonify({"error": "Video file was not created"}), 500
         
-        output_size = os.path.getsize(output_path)
-        print(f"[SUCCESS] Video created: {output_path} ({output_size} bytes)")
+        # Get file size
+        file_size = os.path.getsize(output_path)
         
-        # Cleanup
-        try:
-            os.remove(image_path)
-            os.remove(audio_path)
-        except Exception as e:
-            print(f"[WARNING] Cleanup failed: {e}")
+        return jsonify({
+            "message": "Video created successfully",
+            "video_path": output_path,
+            "video_url": f"/download/{os.path.basename(output_path)}",
+            "filename": os.path.basename(output_path),
+            "size": file_size
+        }), 200
         
-        return send_file(
-            output_path,
-            mimetype='video/mp4',
-            as_attachment=True,
-            download_name=f'video_{video_id}.mp4',
-            max_age=0
-        )
-        
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "Download timeout"}), 504
     except subprocess.TimeoutExpired:
-        return jsonify({'error': 'FFmpeg timeout'}), 500
-    
+        return jsonify({"error": "FFmpeg timeout"}), 504
     except Exception as e:
-        print(f"[ERROR] {str(e)}")
-        return jsonify({'error': f'Server error: {str(e)}'}), 500
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({
-        'status': 'ok',
-        'service': 'ffmpeg-video-api',
-        'version': '1.0.0'
-    })
-
-@app.route('/', methods=['GET'])
-def index():
-    return jsonify({
-        'service': 'FFmpeg Video Creation API',
-        'endpoints': {
-            '/create-video': 'POST - Create video from image + audio (supports both URL and file upload)',
-            '/health': 'GET - Health check'
-        }
-    })
+@app.route('/download/<filename>')
+def download_file(filename):
+    try:
+        filepath = os.path.join(TEMP_DIR, filename)
+        if os.path.exists(filepath):
+            return send_file(filepath, as_attachment=True, download_name=filename, mimetype='video/mp4')
+        else:
+            return jsonify({"error": "File not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=False)
-```
-
-4. Scroll bawah, klik **"Commit changes"**
-5. Railway akan auto-redeploy (tunggu 2-3 menit)
-
----
-
-## 🎯 **WORKFLOW FINAL:**
-```
-... → Prepare for FFmpeg → Convert to Base64 → Create Video (HTTP) → Upload
