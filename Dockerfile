@@ -1,10 +1,10 @@
-# Gunakan Python image yang sudah include FFmpeg
+# Use Python with FFmpeg support
 FROM python:3.11-slim-bullseye
 
 # Set working directory
 WORKDIR /app
 
-# Install FFmpeg dan dependencies
+# Install FFmpeg and dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsm6 \
@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
 # Verify FFmpeg installation
 RUN ffmpeg -version
 
-# Copy requirements
+# Copy requirements first (for better caching)
 COPY requirements.txt .
 
 # Install Python dependencies
@@ -24,15 +24,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create temp directory
+# Create temp directory with proper permissions
 RUN mkdir -p /tmp && chmod 777 /tmp
 
-# Expose port (Railway will set PORT env var)
+# Expose port
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8080/health')"
-
-# Run the application
-CMD gunicorn --bind 0.0.0.0:$PORT --timeout 300 --workers 2 app:app
+# Use shell form to allow environment variable expansion
+CMD gunicorn --bind 0.0.0.0:${PORT:-8080} --timeout 300 --workers 2 --log-level info app:app
