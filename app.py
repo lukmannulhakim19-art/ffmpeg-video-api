@@ -7,9 +7,14 @@ import base64
 import shutil
 from werkzeug.utils import secure_filename
 import logging
+import sys
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging to stdout (Railway needs this)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -21,37 +26,52 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 FFMPEG_PATH = shutil.which('ffmpeg') or '/usr/bin/ffmpeg'
 logger.info(f"FFmpeg path: {FFMPEG_PATH}")
 
-# Verify FFmpeg exists
+# Verify FFmpeg exists at startup
 if not os.path.exists(FFMPEG_PATH):
-    logger.error(f"FFmpeg not found at {FFMPEG_PATH}")
+    logger.error(f"CRITICAL: FFmpeg not found at {FFMPEG_PATH}")
+    logger.error("Application will not work without FFmpeg!")
 else:
-    logger.info("FFmpeg found successfully")
+    try:
+        result = subprocess.run([FFMPEG_PATH, '-version'], capture_output=True, text=True, timeout=5)
+        logger.info(f"FFmpeg version: {result.stdout.split('ffmpeg version')[1].split()[0] if 'ffmpeg version' in result.stdout else 'Unknown'}")
+        logger.info("FFmpeg is ready!")
+    except Exception as e:
+        logger.error(f"FFmpeg test failed: {str(e)}")
 
 @app.route('/')
 def home():
+    logger.info("Root endpoint accessed")
     return jsonify({
         "service": "FFmpeg Video Creation API",
         "status": "running",
+        "ffmpeg_available": os.path.exists(FFMPEG_PATH),
         "endpoints": {
             "/create-video": "POST - Create video (supports URL, file upload, or base64)",
             "/health": "GET - Health check",
             "/test-ffmpeg": "GET - Test FFmpeg installation"
         }
-    })
+    }), 200
 
 @app.route('/health')
 def health():
     """Health check endpoint for Railway"""
+    logger.info("Health check accessed")
     ffmpeg_ok = os.path.exists(FFMPEG_PATH)
+    status_code = 200 if ffmpeg_ok else 503
+    
     return jsonify({
         "status": "healthy" if ffmpeg_ok else "degraded",
-        "ffmpeg": "available" if ffmpeg_ok else "missing"
-    }), 200 if ffmpeg_ok else 503
+        "ffmpeg": "available" if ffmpeg_ok else "missing",
+        "ffmpeg_path": FFMPEG_PATH if ffmpeg_ok else None
+    }), status_code
 
 @app.route('/test-ffmpeg')
 def test_ffmpeg():
     """Test FFmpeg installation"""
+    logger.info("FFmpeg test accessed")
+    
     if not os.path.exists(FFMPEG_PATH):
+        logger.error(f"FFmpeg not found at {FFMPEG_PATH}")
         return jsonify({
             "status": "error",
             "message": f"FFmpeg not found at {FFMPEG_PATH}",
@@ -60,11 +80,15 @@ def test_ffmpeg():
     
     try:
         result = subprocess.run([FFMPEG_PATH, '-version'], capture_output=True, text=True, timeout=5)
+        version_info = result.stdout.split('\n')[0] if result.stdout else "Unknown"
+        logger.info(f"FFmpeg test successful: {version_info}")
+        
         return jsonify({
             "status": "success",
             "ffmpeg_path": FFMPEG_PATH,
-            "version": result.stdout.split('\n')[0] if result.stdout else "Unknown"
-        })
+            "version": version_info,
+            "full_output": result.stdout[:500]  # First 500 chars
+        }), 200
     except Exception as e:
         logger.error(f"FFmpeg test error: {str(e)}")
         return jsonify({
@@ -75,7 +99,7 @@ def test_ffmpeg():
 @app.route('/create-video', methods=['POST'])
 def create_video():
     try:
-        logger.info("Received create-video request")
+        logger.info("=== Create video request received ===")
         unique_id = str(uuid.uuid4())[:8]
         audio_path = None
         image_path = None
@@ -221,6 +245,7 @@ def create_video():
                 os.remove(audio_path)
             if os.path.exists(image_path):
                 os.remove(image_path)
+            logger.info("Input files cleaned up")
         except Exception as e:
             logger.warning(f"Cleanup error: {str(e)}")
         
@@ -243,7 +268,7 @@ def create_video():
         # Get file size
         file_size = os.path.getsize(output_path)
         
-        logger.info(f"Video created successfully: {output_path} ({file_size} bytes)")
+        logger.info(f"✅ Video created successfully: {output_path} ({file_size} bytes)")
         
         return jsonify({
             "message": "Video created successfully",
@@ -260,24 +285,35 @@ def create_video():
         logger.error("FFmpeg timeout")
         return jsonify({"error": "FFmpeg timeout (processing took > 5 minutes)"}), 504
     except Exception as e:
-        logger.error(f"Error: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @app.route('/download/<filename>')
 def download_file(filename):
     """Download generated video file"""
     try:
+        logger.info(f"Download requested: {filename}")
         filepath = os.path.join(TEMP_DIR, filename)
         if os.path.exists(filepath):
-            response = send_file(filepath, as_attachment=True, download_name=filename, mimetype='video/mp4')
-            return response
+            return send_file(filepath, as_attachment=True, download_name=filename, mimetype='video/mp4')
         else:
+            logger.error(f"File not found: {filepath}")
             return jsonify({"error": "File not found"}), 404
     except Exception as e:
         logger.error(f"Download error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+# Startup check
+logger.info("=" * 50)
+logger.info("FFmpeg Video API Starting...")
+logger.info(f"Python version: {sys.version}")
+logger.info(f"Working directory: {os.getcwd()}")
+logger.info(f"Temp directory: {TEMP_DIR}")
+logger.info(f"FFmpeg path: {FFMPEG_PATH}")
+logger.info(f"FFmpeg exists: {os.path.exists(FFMPEG_PATH)}")
+logger.info("=" * 50)
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    logger.info(f"Starting application on port {port}")
+    logger.info(f"Starting Flask app on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
