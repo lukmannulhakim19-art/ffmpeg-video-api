@@ -1,61 +1,37 @@
-# Use official Python image
-FROM python:3.9-slim-bullseye
+# Use Python with FFmpeg support
+FROM python:3.11-slim-bullseye
+
+# Set working directory
+WORKDIR /app
 
 # Install FFmpeg and dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     ffmpeg \
-    libavcodec-extra \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Verify FFmpeg installation
 RUN ffmpeg -version
 
-# Set working directory
-WORKDIR /app
-
-# Copy requirements first (for caching)
+# Copy requirements first (for better caching)
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
-COPY app.py .
+# Copy application code
+COPY . .
+
+# Create temp directory with proper permissions
+RUN mkdir -p /tmp && chmod 777 /tmp
 
 # Expose port
 EXPOSE 8080
 
-# Run with gunicorn
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080", "--timeout", "300", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-"]
-```
+# Set environment variable for port (with default)
+ENV PORT=8080
 
----
-
-## File 4 (Optional): `Procfile`
-```
-web: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 300 --workers 2
-```
-
----
-
-## Struktur Folder di GitHub:
-```
-ffmpeg-video-api/
-├── app.py
-├── requirements.txt
-├── Dockerfile
-└── Procfile (optional)
-```
-
----
-
-## Cara Deploy:
-
-1. **Upload semua file ke GitHub** (replace yang lama)
-2. **Commit dengan message**: "Complete FFmpeg API with full path"
-3. **Tunggu Railway auto-deploy** (2-3 menit)
-4. **Test endpoint** di browser:
-```
-   https://ffmpeg-video-api-production-43ab.up.railway.app/test-ffmpeg
+# Run gunicorn (Railway will override PORT env var)
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT} --timeout 300 --workers 2 --access-logfile - --error-logfile - app:app"]
