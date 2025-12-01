@@ -6,16 +6,6 @@ import requests
 import base64
 import shutil
 from werkzeug.utils import secure_filename
-import logging
-import sys
-
-# Setup logging to stdout (Railway needs this)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -24,54 +14,27 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 # Find FFmpeg executable
 FFMPEG_PATH = shutil.which('ffmpeg') or '/usr/bin/ffmpeg'
-logger.info(f"FFmpeg path: {FFMPEG_PATH}")
-
-# Verify FFmpeg exists at startup
-if not os.path.exists(FFMPEG_PATH):
-    logger.error(f"CRITICAL: FFmpeg not found at {FFMPEG_PATH}")
-    logger.error("Application will not work without FFmpeg!")
-else:
-    try:
-        result = subprocess.run([FFMPEG_PATH, '-version'], capture_output=True, text=True, timeout=5)
-        logger.info(f"FFmpeg version: {result.stdout.split('ffmpeg version')[1].split()[0] if 'ffmpeg version' in result.stdout else 'Unknown'}")
-        logger.info("FFmpeg is ready!")
-    except Exception as e:
-        logger.error(f"FFmpeg test failed: {str(e)}")
+print(f"FFmpeg path: {FFMPEG_PATH}")
 
 @app.route('/')
 def home():
-    logger.info("Root endpoint accessed")
     return jsonify({
         "service": "FFmpeg Video Creation API",
-        "status": "running",
-        "ffmpeg_available": os.path.exists(FFMPEG_PATH),
         "endpoints": {
             "/create-video": "POST - Create video (supports URL, file upload, or base64)",
             "/health": "GET - Health check",
             "/test-ffmpeg": "GET - Test FFmpeg installation"
         }
-    }), 200
+    })
 
 @app.route('/health')
 def health():
-    """Health check endpoint for Railway"""
-    logger.info("Health check accessed")
-    ffmpeg_ok = os.path.exists(FFMPEG_PATH)
-    status_code = 200 if ffmpeg_ok else 503
-    
-    return jsonify({
-        "status": "healthy" if ffmpeg_ok else "degraded",
-        "ffmpeg": "available" if ffmpeg_ok else "missing",
-        "ffmpeg_path": FFMPEG_PATH if ffmpeg_ok else None
-    }), status_code
+    return jsonify({"status": "healthy"})
 
 @app.route('/test-ffmpeg')
 def test_ffmpeg():
     """Test FFmpeg installation"""
-    logger.info("FFmpeg test accessed")
-    
     if not os.path.exists(FFMPEG_PATH):
-        logger.error(f"FFmpeg not found at {FFMPEG_PATH}")
         return jsonify({
             "status": "error",
             "message": f"FFmpeg not found at {FFMPEG_PATH}",
@@ -80,17 +43,12 @@ def test_ffmpeg():
     
     try:
         result = subprocess.run([FFMPEG_PATH, '-version'], capture_output=True, text=True, timeout=5)
-        version_info = result.stdout.split('\n')[0] if result.stdout else "Unknown"
-        logger.info(f"FFmpeg test successful: {version_info}")
-        
         return jsonify({
             "status": "success",
             "ffmpeg_path": FFMPEG_PATH,
-            "version": version_info,
-            "full_output": result.stdout[:500]  # First 500 chars
-        }), 200
+            "version": result.stdout.split('\n')[0] if result.stdout else "Unknown"
+        })
     except Exception as e:
-        logger.error(f"FFmpeg test error: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
@@ -99,7 +57,6 @@ def test_ffmpeg():
 @app.route('/create-video', methods=['POST'])
 def create_video():
     try:
-        logger.info("=== Create video request received ===")
         unique_id = str(uuid.uuid4())[:8]
         audio_path = None
         image_path = None
@@ -107,11 +64,10 @@ def create_video():
         # Check if request is JSON (base64 or URL)
         if request.is_json:
             data = request.get_json()
-            logger.info(f"Processing JSON request with keys: {list(data.keys())}")
             
             # Handle base64 input
             if 'image' in data and 'audio' in data:
-                logger.info("Processing base64 data...")
+                print("Processing base64 data...")
                 
                 # Get base64 strings
                 image_base64 = data['image']
@@ -127,9 +83,7 @@ def create_video():
                 try:
                     image_data = base64.b64decode(image_base64)
                     audio_data = base64.b64decode(audio_base64)
-                    logger.info(f"Decoded - Image: {len(image_data)} bytes, Audio: {len(audio_data)} bytes")
                 except Exception as e:
-                    logger.error(f"Base64 decode error: {str(e)}")
                     return jsonify({"error": f"Base64 decode error: {str(e)}"}), 400
                 
                 # Save to files
@@ -142,12 +96,11 @@ def create_video():
                 with open(audio_path, 'wb') as f:
                     f.write(audio_data)
                 
-                logger.info(f"Files saved - Image: {image_path}, Audio: {audio_path}")
                 output_filename = data.get('output_filename', 'output_video.mp4')
             
             # Handle URL input
             elif 'audio_url' in data and 'image_url' in data:
-                logger.info("Processing URL data...")
+                print("Processing URL data...")
                 audio_url = data['audio_url']
                 image_url = data['image_url']
                 output_filename = data.get('output_filename', 'output_video.mp4')
@@ -156,26 +109,22 @@ def create_video():
                 image_path = os.path.join(TEMP_DIR, f'image_{unique_id}.jpg')
                 
                 # Download files
-                logger.info(f"Downloading audio from {audio_url}")
+                print(f"Downloading audio from {audio_url}")
                 try:
                     audio_response = requests.get(audio_url, timeout=60)
                     audio_response.raise_for_status()
                     with open(audio_path, 'wb') as f:
                         f.write(audio_response.content)
-                    logger.info(f"Audio downloaded: {len(audio_response.content)} bytes")
                 except Exception as e:
-                    logger.error(f"Audio download error: {str(e)}")
                     return jsonify({"error": f"Failed to download audio: {str(e)}"}), 400
                 
-                logger.info(f"Downloading image from {image_url}")
+                print(f"Downloading image from {image_url}")
                 try:
                     image_response = requests.get(image_url, timeout=60)
                     image_response.raise_for_status()
                     with open(image_path, 'wb') as f:
                         f.write(image_response.content)
-                    logger.info(f"Image downloaded: {len(image_response.content)} bytes")
                 except Exception as e:
-                    logger.error(f"Image download error: {str(e)}")
                     if audio_path and os.path.exists(audio_path):
                         os.remove(audio_path)
                     return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
@@ -185,7 +134,7 @@ def create_video():
         
         # Handle multipart file upload
         elif 'audio' in request.files and 'image' in request.files:
-            logger.info("Processing file upload...")
+            print("Processing file upload...")
             audio_file = request.files['audio']
             image_file = request.files['image']
             output_filename = request.form.get('output_filename', 'output_video.mp4')
@@ -195,30 +144,19 @@ def create_video():
             
             audio_file.save(audio_path)
             image_file.save(image_path)
-            logger.info(f"Files uploaded - Image: {image_path}, Audio: {audio_path}")
         
         else:
             return jsonify({"error": "Invalid input. Provide either JSON (base64/URLs) or multipart files"}), 400
         
         # Validate files exist
         if not os.path.exists(audio_path) or not os.path.exists(image_path):
-            logger.error("Input files not found after processing")
             return jsonify({"error": "Failed to save input files"}), 500
-        
-        # Verify file sizes
-        audio_size = os.path.getsize(audio_path)
-        image_size = os.path.getsize(image_path)
-        logger.info(f"File sizes - Image: {image_size} bytes, Audio: {audio_size} bytes")
-        
-        if audio_size == 0 or image_size == 0:
-            logger.error("One or more input files are empty")
-            return jsonify({"error": "Input files are empty"}), 400
         
         # Create video with FFmpeg
         output_path = os.path.join(TEMP_DIR, f'video_{unique_id}_{output_filename}')
         
-        logger.info(f"Creating video: {output_path}")
-        logger.info(f"Using FFmpeg: {FFMPEG_PATH}")
+        print(f"Creating video: {output_path}")
+        print(f"Using FFmpeg: {FFMPEG_PATH}")
         
         cmd = [
             FFMPEG_PATH,
@@ -235,22 +173,18 @@ def create_video():
             output_path
         ]
         
-        logger.info(f"FFmpeg command: {' '.join(cmd)}")
+        print(f"FFmpeg command: {' '.join(cmd)}")
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         # Cleanup input files
-        try:
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-            if os.path.exists(image_path):
-                os.remove(image_path)
-            logger.info("Input files cleaned up")
-        except Exception as e:
-            logger.warning(f"Cleanup error: {str(e)}")
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+        if os.path.exists(image_path):
+            os.remove(image_path)
         
         if result.returncode != 0:
-            logger.error(f"FFmpeg error: {result.stderr}")
+            print(f"FFmpeg error: {result.stderr}")
             return jsonify({
                 "error": "FFmpeg failed",
                 "details": result.stderr,
@@ -258,7 +192,6 @@ def create_video():
             }), 500
         
         if not os.path.exists(output_path):
-            logger.error("Video file was not created")
             return jsonify({
                 "error": "Video file was not created",
                 "ffmpeg_output": result.stdout,
@@ -268,7 +201,7 @@ def create_video():
         # Get file size
         file_size = os.path.getsize(output_path)
         
-        logger.info(f"✅ Video created successfully: {output_path} ({file_size} bytes)")
+        print(f"Video created successfully: {output_path} ({file_size} bytes)")
         
         return jsonify({
             "message": "Video created successfully",
@@ -279,41 +212,40 @@ def create_video():
         }), 200
         
     except requests.exceptions.Timeout:
-        logger.error("Download timeout")
         return jsonify({"error": "Download timeout"}), 504
     except subprocess.TimeoutExpired:
-        logger.error("FFmpeg timeout")
         return jsonify({"error": "FFmpeg timeout (processing took > 5 minutes)"}), 504
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/download/<filename>')
 def download_file(filename):
     """Download generated video file"""
     try:
-        logger.info(f"Download requested: {filename}")
         filepath = os.path.join(TEMP_DIR, filename)
         if os.path.exists(filepath):
-            return send_file(filepath, as_attachment=True, download_name=filename, mimetype='video/mp4')
+            response = send_file(filepath, as_attachment=True, download_name=filename, mimetype='video/mp4')
+            # Schedule file deletion after download
+            # Note: In production, you'd want a cleanup job
+            return response
         else:
-            logger.error(f"File not found: {filepath}")
             return jsonify({"error": "File not found"}), 404
     except Exception as e:
-        logger.error(f"Download error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-# Startup check
-logger.info("=" * 50)
-logger.info("FFmpeg Video API Starting...")
-logger.info(f"Python version: {sys.version}")
-logger.info(f"Working directory: {os.getcwd()}")
-logger.info(f"Temp directory: {TEMP_DIR}")
-logger.info(f"FFmpeg path: {FFMPEG_PATH}")
-logger.info(f"FFmpeg exists: {os.path.exists(FFMPEG_PATH)}")
-logger.info("=" * 50)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    logger.info(f"Starting Flask app on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
+```
+
+---
+
+## File 2: `requirements.txt`
+```
+flask==3.0.0
+gunicorn==21.2.0
+requests==2.31.0
+werkzeug==3.0.0
