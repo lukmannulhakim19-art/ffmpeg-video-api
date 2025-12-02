@@ -1,37 +1,39 @@
-# Use Python with FFmpeg support
-FROM python:3.11-slim-bullseye
+FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
 # Install FFmpeg and dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
     ffmpeg \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify FFmpeg installation
+# Verify FFmpeg
 RUN ffmpeg -version
 
-# Copy requirements first (for better caching)
+# Copy and install Python dependencies
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application
 COPY . .
 
-# Create temp directory with proper permissions
+# Create temp directory
 RUN mkdir -p /tmp && chmod 777 /tmp
 
 # Expose port
-EXPOSE 8080
+EXPOSE 10000
 
-# Set environment variable for port (with default)
-ENV PORT=8080
-
-# Run gunicorn (Railway will override PORT env var)
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT} --timeout 300 --workers 2 --access-logfile - --error-logfile - app:app"]
+# Run with increased timeout and better worker management
+CMD gunicorn --bind 0.0.0.0:$PORT \
+    --workers 1 \
+    --threads 2 \
+    --timeout 600 \
+    --graceful-timeout 600 \
+    --keep-alive 5 \
+    --max-requests 100 \
+    --max-requests-jitter 10 \
+    --access-logfile - \
+    --error-logfile - \
+    --log-level info \
+    app:app
